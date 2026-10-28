@@ -1,9 +1,17 @@
+# WHY THIS DESIGN:
+# The SmartDialer pipeline enforces the core architectural invariant:
+# Campaign -> Pacing Engine -> Safety Controller -> Call Allocator -> Telecom Provider.
+# The CallAllocator physically refuses to initiate dials unless presented with an authentic
+# SafetyPass token issued by the SafetyController.
+# This prevents race conditions and architectural bypasses, ensuring predictive dialing
+# can never accidentally dial without safety approval.
 from __future__ import annotations
 import uuid
 import time
 import asyncio
 import logging
 from enum import Enum
+from dataclasses import dataclass
 from typing import Optional, List, Dict, Any
 from ..models.agent import Agent, AgentState
 from ..models.call import Call, CallState
@@ -24,6 +32,24 @@ class DialerMode(str, Enum):
     PREDICTIVE = "PREDICTIVE"
 
 
+@dataclass
+class TickDiagnostics:
+    cycle: int
+    mode: str
+    available_agents: int
+    connected_agents: int
+    in_flight_calls: int
+    pending_borrowers: int
+    estimated_answer_rate: float
+    expected_connections: int
+    pacing_proposed_calls: int
+    pacing_reason: str
+    safety_decision: str
+    safety_authorized_calls: int
+    safety_reason: str
+    dispatched_calls: int
+
+
 class CallAllocator:
     """
     Subcomponent responsible for reserving borrower and agent records and dispatching to carrier.
@@ -35,10 +61,12 @@ class CallAllocator:
         self,
         storage: StorageInterface,
         provider: TelecomProvider,
+        circuit_breaker: Optional[TelecomCircuitBreaker] = None,
         worker_id: str = "allocator_main",
     ):
         self.storage = storage
         self.provider = provider
+        self.circuit_breaker = circuit_breaker
         self.worker_id = worker_id
 
     async def dispatch_authorized_calls(
@@ -103,8 +131,12 @@ class CallAllocator:
                 new_call.provider_call_id = res.provider_call_id
                 self.storage.save_call(new_call)
                 dispatched_calls.append(new_call)
+                if self.circuit_breaker:
+                    self.circuit_breaker.record_success()
             else:
                 # Carrier rejected call
+                if self.circuit_breaker:
+                    self.circuit_breaker.record_failure()
                 self.storage.record_call_event_idempotent(
                     call_id, f"fail_init_{uuid.uuid4().hex[:6]}", CallState.FAILED, res.error_message
                 )
@@ -127,7 +159,7 @@ class SmartDialer:
         storage: StorageInterface,
         provider: TelecomProvider,
         mode: DialerMode = DialerMode.PROGRESSIVE,
-        max_multiplier_ceiling: float = 3.5,
+        max_multiplier_ceiling: float = 3.0,
     ):
         self.campaign_id = campaign_id
         self.storage = storage
@@ -141,12 +173,14 @@ class SmartDialer:
         self.progressive_pacing = ProgressivePacingEngine()
         self.predictive_pacing = PredictivePacingEngine()
         self.safety_controller = SafetyController(max_multiplier_ceiling=max_multiplier_ceiling)
-        self.call_allocator = CallAllocator(storage, provider)
+        self.call_allocator = CallAllocator(storage, provider, circuit_breaker=self.circuit_breaker)
 
         self.total_cycles = 0
         self.total_calls_initiated = 0
         self.history_proposals: List[PacingProposal] = []
         self.history_passes: List[SafetyPass] = []
+        self.last_tick_diagnostics: Optional[TickDiagnostics] = None
+        self._step_lock = asyncio.Lock()
 
     async def step(
         self,
@@ -156,58 +190,83 @@ class SmartDialer:
         """
         Executes one full iteration of the dialer loop.
         """
-        self.total_cycles += 1
+        async with self._step_lock:
+            self.total_cycles += 1
 
-        # 1. Inspect live system capacity
-        agent_counts = self.storage.count_agents_by_state()
-        available_agents = agent_counts.get(AgentState.AVAILABLE, 0)
-        connected_agents = agent_counts.get(AgentState.CONNECTED, 0)
+            # 1. Inspect live system capacity
+            agent_counts = self.storage.count_agents_by_state()
+            available_agents = agent_counts.get(AgentState.AVAILABLE, 0)
+            connected_agents = agent_counts.get(AgentState.CONNECTED, 0)
 
-        active_calls = self.storage.list_active_calls(self.campaign_id)
-        in_flight_calls = sum(1 for c in active_calls if c.state in (CallState.INITIATED, CallState.RINGING))
-        pending_borrowers = self.storage.count_pending_borrowers(self.campaign_id)
+            active_calls = self.storage.list_active_calls(self.campaign_id)
+            in_flight_calls = sum(1 for c in active_calls if c.state in (CallState.INITIATED, CallState.RINGING))
+            pending_borrowers = self.storage.count_pending_borrowers(self.campaign_id)
 
-        # 2. Pacing Engine proposals
-        if self.mode == DialerMode.PROGRESSIVE:
-            proposal = self.progressive_pacing.calculate_pacing(
-                available_agents=available_agents,
-                in_flight_calls=in_flight_calls,
-                pending_borrowers=pending_borrowers,
-                recent_answer_rate=override_answer_rate or 0.5,
+            # 2. Pacing Engine proposals
+            if self.mode == DialerMode.PROGRESSIVE:
+                proposal = self.progressive_pacing.calculate_pacing(
+                    available_agents=available_agents,
+                    in_flight_calls=in_flight_calls,
+                    pending_borrowers=pending_borrowers,
+                    recent_answer_rate=override_answer_rate or 0.5,
+                )
+            else:
+                proposal = self.predictive_pacing.calculate_pacing(
+                    available_agents=available_agents,
+                    connected_agents=connected_agents,
+                    in_flight_calls=in_flight_calls,
+                    pending_borrowers=pending_borrowers,
+                    override_answer_rate=override_answer_rate,
+                )
+
+            total_active_workforce = sum(
+                agent_counts.get(s, 0)
+                for s in (AgentState.AVAILABLE, AgentState.CONNECTED, AgentState.DIALING, AgentState.RESERVED, AgentState.WRAP_UP)
             )
-        else:
-            proposal = self.predictive_pacing.calculate_pacing(
+
+            # 3. SAFETY CONTROLLER: The Non-Bypassable Boundary
+            safety_pass = self.safety_controller.evaluate(
+                proposal=proposal,
+                available_agents=available_agents,
+                connected_agents=connected_agents,
+                in_flight_calls=in_flight_calls,
+                circuit_breaker=self.circuit_breaker,
+                total_workforce=total_active_workforce,
+            )
+            self.history_passes.append(safety_pass)
+
+            # 4. Call Allocator Dispatches ONLY with SafetyPass
+            dispatched_count = 0
+            if safety_pass.authorized_calls > 0:
+                effective_answer_prob = override_answer_rate if override_answer_rate is not None else 0.5
+                dispatched = await self.call_allocator.dispatch_authorized_calls(
+                    campaign_id=self.campaign_id,
+                    safety_pass=safety_pass,
+                    simulated_answer_prob=effective_answer_prob,
+                    avg_talk_time_sec=avg_talk_time_sec,
+                )
+                dispatched_count = len(dispatched)
+                self.total_calls_initiated += dispatched_count
+
+            # Record human-readable explainable diagnostics for this tick
+            self.last_tick_diagnostics = TickDiagnostics(
+                cycle=self.total_cycles,
+                mode=self.mode.value,
                 available_agents=available_agents,
                 connected_agents=connected_agents,
                 in_flight_calls=in_flight_calls,
                 pending_borrowers=pending_borrowers,
-                override_answer_rate=override_answer_rate,
+                estimated_answer_rate=proposal.target_answer_rate,
+                expected_connections=proposal.expected_connections,
+                pacing_proposed_calls=proposal.suggested_calls,
+                pacing_reason=proposal.reason,
+                safety_decision=safety_pass.decision.value,
+                safety_authorized_calls=safety_pass.authorized_calls,
+                safety_reason=safety_pass.reason,
+                dispatched_calls=dispatched_count,
             )
 
-        self.history_proposals.append(proposal)
-
-        # 3. SAFETY CONTROLLER: The Non-Bypassable Boundary
-        safety_pass = self.safety_controller.evaluate(
-            proposal=proposal,
-            available_agents=available_agents,
-            connected_agents=connected_agents,
-            in_flight_calls=in_flight_calls,
-            circuit_breaker=self.circuit_breaker,
-        )
-        self.history_passes.append(safety_pass)
-
-        # 4. Call Allocator Dispatches ONLY with SafetyPass
-        if safety_pass.authorized_calls > 0:
-            effective_answer_prob = override_answer_rate if override_answer_rate is not None else 0.5
-            dispatched = await self.call_allocator.dispatch_authorized_calls(
-                campaign_id=self.campaign_id,
-                safety_pass=safety_pass,
-                simulated_answer_prob=effective_answer_prob,
-                avg_talk_time_sec=avg_talk_time_sec,
-            )
-            self.total_calls_initiated += len(dispatched)
-
-        return safety_pass
+            return safety_pass
 
     def get_metrics(self) -> Dict[str, Any]:
         agent_counts = self.storage.count_agents_by_state()

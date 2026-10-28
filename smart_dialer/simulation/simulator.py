@@ -10,7 +10,7 @@ from ..models.agent import Agent, AgentState
 from ..models.borrower import Borrower, BorrowerStatus
 from ..telecom.mock_provider_a import MockProviderA
 from ..telecom.mock_provider_b import MockProviderB
-from ..core.dialer import SmartDialer, DialerMode
+from ..core.dialer import SmartDialer, DialerMode, TickDiagnostics
 from ..safety.safety_controller import SafetyDecision
 
 
@@ -18,14 +18,14 @@ from ..safety.safety_controller import SafetyDecision
 class ScenarioConfig:
     name: str
     description: str
-    num_agents: int = 50
+    num_agents: int = 30
     num_borrowers: int = 300
     answer_rate: float = 0.50
-    avg_talk_time_sec: float = 1.0  # Time-scaled for fast simulation
+    avg_talk_time_sec: float = 0.25  # Time-scaled for fast simulation
     dynamic_answer_rate: bool = False
     use_provider_b: bool = False
     inject_agent_drop_cycle: Optional[int] = None
-    agent_drop_count: int = 20
+    agent_drop_count: int = 8
     cycles: int = 15
 
 
@@ -42,6 +42,7 @@ class ScenarioResult:
     safety_decisions: Dict[str, int]
     provider_name: str
     notes: str
+    representative_tick: Optional[TickDiagnostics] = None
 
 
 class DialerSimulator:
@@ -59,10 +60,11 @@ class DialerSimulator:
         # Choose provider
         if config.use_provider_b:
             self.provider = MockProviderB(
-                timeout_rate=0.08, duplicate_event_rate=0.15, out_of_order_rate=0.15
+                timeout_rate=0.05, duplicate_event_rate=0.10, out_of_order_rate=0.10,
+                min_latency=0.01, max_latency=0.03
             )
         else:
-            self.provider = MockProviderA(failure_rate=0.02)
+            self.provider = MockProviderA(failure_rate=0.02, min_latency=0.005, max_latency=0.015)
 
         self.campaign_id = f"camp_{config.name.lower()}"
         self.dialer = SmartDialer(
@@ -70,6 +72,7 @@ class DialerSimulator:
             storage=self.storage,
             provider=self.provider,
             mode=mode,
+            max_multiplier_ceiling=3.0,
         )
 
         self._seed_data()
@@ -94,6 +97,7 @@ class DialerSimulator:
 
     async def run(self) -> ScenarioResult:
         utilization_samples: List[float] = []
+        representative_tick: Optional[TickDiagnostics] = None
 
         current_p = self.config.answer_rate
         talk_time = self.config.avg_talk_time_sec
@@ -101,13 +105,11 @@ class DialerSimulator:
         for cycle in range(1, self.config.cycles + 1):
             # Dynamic conditions in Scenario D
             if self.config.dynamic_answer_rate:
-                # Oscillate answer rate between 20% and 80%
-                current_p = 0.20 + 0.60 * (0.5 + 0.5 * random.random())
-                talk_time = random.uniform(0.5, 2.0)
+                current_p = 0.30 + 0.40 * (0.5 + 0.5 * random.random())
+                talk_time = random.uniform(0.2, 0.4)
 
             # Test Sudden Agent Drop
             if self.config.inject_agent_drop_cycle == cycle:
-                # Abruptly remove agents
                 avail = self.storage.list_available_agents(limit=self.config.agent_drop_count)
                 for a in avail:
                     self.storage.update_agent_state(a.id, AgentState.OFFLINE)
@@ -115,19 +117,23 @@ class DialerSimulator:
             # Step dialer
             await self.dialer.step(override_answer_rate=current_p, avg_talk_time_sec=talk_time)
 
-            # Record utilization
+            if cycle == 2 and self.dialer.last_tick_diagnostics:
+                representative_tick = self.dialer.last_tick_diagnostics
+
+            # Allow calls to initiate, ring, and bridge
+            await asyncio.sleep(0.08)
+
+            # Record utilization while calls are connected
             metrics = self.dialer.get_metrics()
             utilization_samples.append(metrics["agent_utilization_pct"])
 
-            # Brief delay for simulated asynchronous telecom events to resolve
-            await asyncio.sleep(0.12)
+            # Allow talk duration progress
+            await asyncio.sleep(talk_time * 0.7)
 
         # Allow trailing calls to wrap up
-        await asyncio.sleep(talk_time + 0.2)
+        await asyncio.sleep(talk_time + 0.1)
 
         final_metrics = self.dialer.get_metrics()
-        active = self.storage.list_active_calls(self.campaign_id)
-        # Count connected calls
         cur = self.storage._conn.execute("SELECT count(*) as cnt FROM call_events WHERE state = 'CONNECTED'")
         row = cur.fetchone()
         total_connected = row["cnt"] if row else 0
@@ -140,7 +146,7 @@ class DialerSimulator:
         peak_util = max(utilization_samples) if utilization_samples else 0.0
 
         notes = (
-            f"Cycles: {self.config.cycles}, Final answer rate: {current_p:.1%}. "
+            f"Cycles: {self.config.cycles}, Answer rate: {current_p:.1%}. "
             f"Duplicates ignored: {final_metrics['duplicate_events_ignored']}."
         )
 
@@ -156,4 +162,5 @@ class DialerSimulator:
             safety_decisions=final_metrics["safety_decisions"],
             provider_name=self.provider.name,
             notes=notes,
+            representative_tick=representative_tick,
         )

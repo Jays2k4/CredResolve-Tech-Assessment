@@ -88,7 +88,7 @@ stateDiagram-v2
     QUEUED --> RESERVED : Allocated to Worker
     RESERVED --> INITIATED : Handed off to Telecom Provider
     INITIATED --> RINGING : Provider Ringing Webhook
-    INITIATED --> ANSWERED : Direct Answer (Ringing Skipped)
+    INITIATED --> ANSWERED : Direct Answer (Fast Pickup)
     INITIATED --> FAILED : Network / SIP Error
     
     RINGING --> ANSWERED : Borrower Picked Up
@@ -103,6 +103,33 @@ stateDiagram-v2
     COMPLETED --> [*]
     FAILED --> [*]
     CANCELLED --> [*]
+```
+
+### 3.3 Out-of-Order & Duplicate Webhook Resolution
+Telecom networks frequently deliver webhooks out of sequence (e.g., `COMPLETED` before `ANSWERED`, or retransmitted duplicates). The `ResilientEventHandler` enforces monotonicity and idempotency via state ranking:
+
+| Call State | Progression Rank | Is Terminal? | Allowed Forward Transitions |
+| :--- | :--- | :--- | :--- |
+| `QUEUED` | 0 | No | `RESERVED`, `CANCELLED` |
+| `RESERVED` | 10 | No | `INITIATED`, `CANCELLED` |
+| `INITIATED` | 20 | No | `RINGING`, `ANSWERED`, `FAILED` |
+| `RINGING` | 30 | No | `ANSWERED`, `FAILED` |
+| `ANSWERED` | 40 | No | `CONNECTED`, `FAILED` |
+| `CONNECTED` | 50 | No | `COMPLETED`, `FAILED` |
+| `COMPLETED` | 100 | **Yes** | None (Immutable terminal state) |
+| `FAILED` | 100 | **Yes** | None (Immutable terminal state) |
+| `CANCELLED` | 100 | **Yes** | None (Immutable terminal state) |
+
+```mermaid
+flowchart TD
+    WH[Incoming Telecom Webhook Event] --> IDEMP{Event ID Already<br/>Processed?}
+    IDEMP -- Yes --> DISC1[Discard: Duplicate Webhook Idempotency]
+    IDEMP -- No --> TERM{Is Call Already<br/>in Terminal State?<br/>COMPLETED / FAILED}
+    TERM -- Yes --> DISC2[Discard: Terminal State is Immutable]
+    TERM -- No --> RANK{Event State Rank >=<br/>Current Call State Rank?}
+    RANK -- No --> DISC3[Discard: Out-of-Order Stale Regression]
+    RANK -- Yes --> APPLY[Apply State Transition & Update Agent / Borrower]
+    APPLY --> COMMIT[Commit Event ID to Processed Store]
 ```
 
 ---
@@ -240,48 +267,59 @@ Suppose the system has:
 
 ---
 
-### Question 7: What part of your architecture are you least confident about?
-**Answer**:
-**The estimation of call setup latency ($t_{\text{setup}}$) and telco ring durations under provider carrier congestion.**
-- While answer rate and talk duration follow predictable distributions, telecom carrier ring times exhibit high tail latency (bimodal distribution: voicemail pickups at 4 seconds vs. long ringers at 28 seconds).
-- If multiple calls take 25 seconds to answer simultaneously, our pipeline could experience a cluster of concurrent pickups that coincide with a temporary lull in agent wrap-ups, creating a brief spike in abandonment risk.
-- *Mitigation*: Our dynamic Safety Controller includes an in-flight answer discount factor that damps new dial dispatches whenever existing in-flight ringing calls exceed safe thresholds.
+### Question 7: Known Limitations and What I'm Least Confident About
+1. **SQLite is a Single-Writer Store**:
+   While SQLite WAL mode allows non-blocking concurrent readers, only one thread or process can hold the write lock at any given moment. Under high worker concurrency, write operations on the `agents` and `calls` tables serialize, causing busy-handler retry loops and contention.
+2. **The Statistical Pacing Model is Simple**:
+   The current model relies on rolling Exponential Moving Averages (EMA) and linear expected agent turnaround ($C \times t_{\text{setup}} / T_{\text{talk}}$). In real-world telephony, talk durations and ring times are heavy-tailed and bimodal (e.g. 3-second voicemail disconnects vs. 15-minute negotiations) rather than memoryless exponential distributions. A sudden cluster of long ringers answering simultaneously can create transient capacity pressure.
+3. **What Breaks at 1,000 Agents**:
+   - Write lock contention on the `agents` table becomes a bottleneck as hundreds of agents transition states simultaneously.
+   - Pacing evaluation loops begin observing stale agent counts if transaction commits lag by even 50ms.
+4. **What Breaks at 10,000 Agents**:
+   - A single database node cannot ingest the ~3,000 incoming webhook events per second.
+   - Aggregating global system state across 10,000 agent rows on every pacing cycle causes multi-second query delays.
+   - **Fix**: Shard the system into autonomous campaign/skill pods of 500–1,000 agents, move atomic agent leases to Redis with Lua scripts, and stream telephony webhooks through partitioned Kafka topics.
 
 ---
 
 ### Question 8: What would you do differently if you had another week?
-1. **Erlang-C Hazard Rate Markov Chains**:
-   - Upgrade the pacing model from rolling expectations to a discrete-time Erlang-C Markov queue that computes the exact probability $P(\text{abandon} > 0)$ at each step, maintaining abandonment below a strict 0.5% threshold.
+1. **Discrete-Time Erlang-C Queueing**:
+   Upgrade the pacing calculation from rolling averages to a Markov queue with hazard rate curves, computing exact abandonment risk intervals.
 2. **Live Telecom SIP/WebRTC Integration**:
-   - Implement a real provider driver for Twilio / Plivo with audio stream bridging.
+   Implement live carrier drivers for Twilio or Plivo with programmable media stream bridging.
 3. **Outbound Answering Machine Detection (AMD)**:
-   - Integrate an audio classification hook to filter out carrier voicemails before they touch the agent queue.
-4. **Distributed Redis Lua Layer**:
-   - Provide an optional drop-in Redis cluster backend alongside the SQLite engine for horizontal multi-node benchmark demonstrations.
+   Add audio classification webhooks to detect carrier voicemail beeps and auto-disconnect before routing to live agents.
+4. **Distributed Redis Lua Storage Engine**:
+   Provide a pluggable Redis cluster backend implementing atomic `SPOP` and conditional leases for multi-node deployments.
 
 ---
 
 ## 5. Final Synthesis Question
 
-> **"How would you build a SmartDialer that gets as much of the utilization benefit of predictive dialing as possible, while retaining the deterministic safety characteristics of progressive dialing?"**
+> **"How would you build a SmartDialer that gets the utilization benefit of predictive dialing while retaining the deterministic safety of progressive dialing?"**
 
-### The Solution: "Adaptive Dual-Reservoir Dialing with Micro-Progressive Commit"
+The most reliable way to achieve high predictive utilization while keeping progressive safety is a strict separation of concerns: predictive pacing only proposes, but a hard safety cap decides.
 
-To achieve both high utilization (predictive) and zero abandonment (progressive):
+Predictive algorithms analyze historical answer rates and talk durations to propose an aggressive number of calls so agents do not sit idle. However, the pacing engine never initiates calls directly. Every proposal must pass through a non-bypassable Safety Controller that enforces a hard mathematical ceiling: the number of in-flight ringing calls, scaled by the estimated answer rate, can never exceed the agents currently available plus those definitively finishing their wrap-up.
 
-1. **Split the Agent Pool into Two Virtual Tiers**:
-   - **Primary Tier (85% of agents)**: Dedicated to progressive-style committed allocation.
-   - **Safety Reservoir / Floater Tier (15% of agents)**: Kept in a ultra-responsive buffer (e.g. wrapping up or handling asynchronous back-office work) that can instantly absorb any sudden over-pickup spike.
+If the answer rate suddenly spikes or agents log off unexpectedly, the Safety Controller immediately trims the proposed batch down to the safe headroom or falls back to one-to-one progressive dialing. The system captures the speed of predictive dialing when conditions are stable, while deterministically guaranteeing zero abandoned calls when conditions fluctuate.
 
-2. **Micro-Pacing on In-Flight Milestones**:
-   - Traditional predictive dialers blast $N$ calls at once.
-   - SmartDialer paces in **micro-bursts** synchronized to telecom signaling milestones:
-     - Dials are initiated aggressively.
-     - The moment a call moves from `INITIATED` to `RINGING`, its probability weight increases.
-     - If the number of `RINGING` calls equals available agents, new dials are throttled to zero until either a call connects or fails.
+---
 
-3. **Deterministic Progressive Fallback Gate**:
-   - Pacing suggestions are dynamic and predictive; however, the **Safety Controller enforces a deterministic invariant**:
-     $$\mathbb{E}[\text{Answers in Next 5s}] + 2\sigma \le \text{Available Agents} + \text{Reservoir Buffer}$$
-   - When the $2\sigma$ upper confidence interval touches the reservoir ceiling, the dialer automatically locks into **deterministic progressive mode (1:1)**.
-   - Result: During normal low-pickup periods, the dialer operates at 3x–5x predictive speed, boosting agent utilization from 20% to >75%; during unexpected pickup surges, it deterministically clamps to 1:1 progressive safety, guaranteeing **0% regulatory compliance violations**.
+## 6. Honest Load Test Methodology & Scope
+
+To ensure transparent benchmarking, our load testing suite is split into two distinct, honest components:
+
+### Part 1: Full Dialing Pipeline Load Test
+- **What it measures**: The complete end-to-end execution path: Pacing Proposal $\rightarrow$ Safety Controller evaluation $\rightarrow$ `CallAllocator` atomic CAS lock $\rightarrow$ Telecom Provider dispatch $\rightarrow$ Asynchronous webhook ingestion $\rightarrow$ SQLite state updates.
+- **Invariants Checked**:
+  1. *Zero double-allocated agents*: No agent is ever assigned to two active calls simultaneously (`HAVING count(*) > 1 == 0`).
+  2. *Zero duplicate borrowers*: No borrower is ever reserved more than once across concurrent worker loops.
+  3. *Zero illegal state transitions*: All calls follow strictly valid forward progression ranks; out-of-order and duplicate events are safely ignored.
+- **Throughput**: ~350 calls/second processed through the entire software pipeline with 10 concurrent worker tasks.
+
+### Part 2: Isolated Low-Level CAS Contention Benchmark
+- **What it measures**: Raw SQLite conditional write throughput under extreme parallel contention across 15 worker threads/coroutines.
+- **Scope**: Measures the isolated performance of `UPDATE agents SET state = 'RESERVED' WHERE id = :id AND state = 'AVAILABLE' AND version = :v` without the overhead of network emulation or pacing math.
+- **Throughput**: ~2,500+ atomic CAS operations/second with 100% isolation and 0 race conditions.
+

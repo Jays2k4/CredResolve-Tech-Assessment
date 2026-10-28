@@ -1,3 +1,10 @@
+# WHY THIS DESIGN:
+# Predictive dialing maximizes agent utilization by anticipating when agents will become free
+# and compensating for low borrower answer rates.
+# Instead of black-box ML, we use transparent queueing theory:
+# Expected Capacity = Available Agents + Connected Agents * (setup_time / avg_talk_time).
+# Target Dials = Expected Capacity / Answer Rate.
+# Every proposal includes full mathematical reasoning explaining why N calls were suggested.
 from __future__ import annotations
 import math
 from typing import Optional

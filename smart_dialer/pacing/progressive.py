@@ -1,3 +1,8 @@
+# WHY THIS DESIGN:
+# Progressive dialing enforces a deterministic 1:1 invariant:
+# If N agents are currently available and unassigned, at most N outbound calls are initiated.
+# This eliminates call abandonment risks completely, but sacrifices agent utilization
+# whenever answer rates are low or call setup times cause agents to sit idle waiting for pick-ups.
 from __future__ import annotations
 from dataclasses import dataclass
 

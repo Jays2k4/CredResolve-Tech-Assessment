@@ -48,13 +48,13 @@ async def test_duplicate_event_handling_idempotency():
     # First event application
     await handler.handle_webhook(event)
     call_after_1 = storage.get_call("c_dup")
-    assert call_after_1.state in (CallState.ANSWERED, CallState.CONNECTED)
+    assert call_after_1.state == CallState.CONNECTED
 
     # Duplicate identical event application
     await handler.handle_webhook(event)
     assert handler.duplicate_events_ignored == 1
     call_after_2 = storage.get_call("c_dup")
-    assert call_after_2.state == call_after_1.state
+    assert call_after_2.state == CallState.CONNECTED
 
 
 def test_circuit_breaker_transitions():

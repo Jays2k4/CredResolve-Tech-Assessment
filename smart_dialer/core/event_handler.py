@@ -1,5 +1,14 @@
+# WHY THIS DESIGN:
+# The ResilientEventHandler manages the external chaos of telecom carriers.
+# Real telecom providers deliver duplicate webhooks, out-of-order events (e.g. COMPLETED
+# arriving before ANSWERED), and abrupt disconnects.
+# This handler enforces idempotency via database unique constraints and monotonic
+# progression ranks, ensuring the system state never regresses.
+# Upon borrower pickup, it bridges to reserved agents or allocates from the available pool,
+# allowing a brief grace interval for wrapping-up agents before flagging compliance abandonment.
 from __future__ import annotations
 import time
+import asyncio
 import logging
 from typing import Optional
 from ..models.agent import AgentState
@@ -85,13 +94,18 @@ class ResilientEventHandler:
             assigned_agent_id = call.agent_id
             if not assigned_agent_id:
                 # Predictive mode: borrower picked up, allocate next available agent atomically
-                available_agents = self.storage.list_available_agents(limit=5)
-                for cand in available_agents:
-                    if self.storage.reserve_agent_atomic(cand.id, "allocator", cand.version, 60.0):
-                        assigned_agent_id = cand.id
-                        call.agent_id = assigned_agent_id
-                        self.storage.save_call(call)
+                # Retry across brief intervals (up to 0.2s) to allow agents in wrap-up to complete
+                for attempt in range(6):
+                    available_agents = self.storage.list_available_agents(limit=5)
+                    for cand in available_agents:
+                        if self.storage.reserve_agent_atomic(cand.id, "allocator", cand.version, 60.0):
+                            assigned_agent_id = cand.id
+                            call.agent_id = assigned_agent_id
+                            self.storage.save_call(call)
+                            break
+                    if assigned_agent_id:
                         break
+                    await asyncio.sleep(0.03)
 
             if assigned_agent_id:
                 # Successfully bridged to agent
@@ -115,14 +129,15 @@ class ResilientEventHandler:
                     # Transition to WRAP_UP
                     self.storage.update_agent_state(agent.id, AgentState.WRAP_UP)
                     # Automatically release back to AVAILABLE after wrap-up
-                    import asyncio
                     asyncio.create_task(self._release_agent_after_wrapup(agent.id))
 
             # Mark borrower as contacted
             self.storage.update_borrower_status(call.borrower_id, BorrowerStatus.CONTACTED)
 
         elif target_state == CallState.FAILED:
-            if self.circuit_breaker:
+            if self.circuit_breaker and event.error_message and any(
+                err in event.error_message for err in ("SIP", "Timeout", "503", "504", "Gateway", "Carrier")
+            ):
                 self.circuit_breaker.record_failure()
 
             # Release reserved agent if any
@@ -138,7 +153,6 @@ class ResilientEventHandler:
                     self.storage.update_borrower_status(borrower.id, BorrowerStatus.PENDING)
 
     async def _release_agent_after_wrapup(self, agent_id: str) -> None:
-        import asyncio
         await asyncio.sleep(self.wrap_up_duration_sec)
         agent = self.storage.get_agent(agent_id)
         if agent and agent.state == AgentState.WRAP_UP:

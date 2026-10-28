@@ -1,3 +1,10 @@
+# WHY THIS DESIGN:
+# In distributed collections systems, multiple dialer workers run concurrently against
+# shared campaign queues.
+# Each worker leases resources with a time-to-live (TTL).
+# If a worker node crashes mid-flight (e.g. SIGKILL / out of memory), the
+# LeaseReconciliationService detects expired leases and safely restores orphaned agents
+# and borrowers to healthy pools without human intervention.
 from __future__ import annotations
 import uuid
 import time

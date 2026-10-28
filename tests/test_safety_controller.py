@@ -23,10 +23,10 @@ def test_safety_controller_approve_and_reduce():
 
     # 2. Over-aggressive proposal -> REDUCE
     aggressive_proposal = PacingProposal("Predictive", suggested_calls=50, reason="aggressive", target_answer_rate=0.2, expected_connections=10)
+    # Safe ceiling: 10 * 3.0 = 30. in_flight = 5. Net headroom = 25.
     s_pass_reduced = ctrl.evaluate(aggressive_proposal, available_agents=10, connected_agents=5, in_flight_calls=5)
     assert s_pass_reduced.decision == SafetyDecision.REDUCE
-    assert s_pass_reduced.authorized_calls <= 25
-    assert s_pass_reduced.authorized_calls > 0
+    assert s_pass_reduced.authorized_calls == 25
 
 
 def test_safety_controller_rejects_on_carrier_outage():

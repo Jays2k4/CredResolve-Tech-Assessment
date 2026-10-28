@@ -1,3 +1,10 @@
+# WHY THIS DESIGN:
+# SQLite in WAL (Write-Ahead Logging) mode provides true ACID transactions and zero-dependency
+# portability, making the prototype 100% locally runnable for any engineer.
+# Concurrency safety is achieved via optimistic Compare-And-Swap (CAS):
+# `UPDATE agents SET state='RESERVED', version=version+1 WHERE id=? AND state='AVAILABLE' AND version=?`
+# If two workers query the same available agent, only one gets rowcount=1, while the other gets rowcount=0.
+# Time-to-Live (TTL) leases guarantee automatic recovery if a worker crashes holding a lock.
 from __future__ import annotations
 import sqlite3
 import threading
