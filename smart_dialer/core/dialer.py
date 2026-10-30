@@ -229,16 +229,11 @@ class SmartDialer:
                 for s in (AgentState.AVAILABLE, AgentState.CONNECTED, AgentState.DIALING, AgentState.RESERVED, AgentState.WRAP_UP)
             )
 
-            # Count wrap-up agents and calls whose talk time has completed
+            # Count only agents whose release is bounded by an enforced rule:
+            # specifically, agents in WRAP_UP with a hard wrap-up deadline shorter than setup window.
+            # Calls reaching average talk time are soft estimates and must NOT be in guaranteed_freed.
             wrap_up_agents = agent_counts.get(AgentState.WRAP_UP, 0)
-            now = time.time()
-            imminent_talk_end_agents = 0
-            for call in active_calls:
-                if call.state == CallState.CONNECTED and call.connected_at:
-                    elapsed = now - call.connected_at
-                    if elapsed >= avg_talk_time_sec:
-                        imminent_talk_end_agents += 1
-            guaranteed_freed = wrap_up_agents + imminent_talk_end_agents
+            guaranteed_freed = wrap_up_agents
 
             # 3. SAFETY CONTROLLER: The Non-Bypassable Boundary
             safety_pass = self.safety_controller.evaluate(
@@ -251,6 +246,11 @@ class SmartDialer:
                 guaranteed_freed_agents=guaranteed_freed,
             )
             self.history_passes.append(safety_pass)
+
+            # When workforce falls below in-flight calls (e.g. abrupt agent drop),
+            # cancel surplus ringing calls immediately to protect against abandonment.
+            if in_flight_calls > total_active_workforce:
+                self.cancel_surplus_ringing_calls(target_capacity=total_active_workforce)
 
             # 4. Call Allocator Dispatches ONLY with SafetyPass
             dispatched_count = 0
@@ -284,6 +284,30 @@ class SmartDialer:
             )
 
             return safety_pass
+
+    def cancel_surplus_ringing_calls(self, target_capacity: int) -> int:
+        """
+        When agent workforce drops below in-flight calls, cancels surplus
+        ringing calls (NOT answered or connected ones) immediately to eliminate abandonment risk.
+        Returns the number of cancelled ringing calls.
+        """
+        active_calls = self.storage.list_active_calls(self.campaign_id)
+        ringing_calls = [c for c in active_calls if c.state in (CallState.INITIATED, CallState.RINGING)]
+        in_flight_count = len(ringing_calls)
+        surplus = max(0, in_flight_count - target_capacity)
+        cancelled = 0
+        for i in range(surplus):
+            call_to_cancel = ringing_calls[i]
+            event_id = f"evt_cancel_drop_{uuid.uuid4().hex[:8]}"
+            self.storage.record_call_event_idempotent(
+                call_to_cancel.id,
+                event_id,
+                CallState.CANCELLED,
+                note="Cancelled surplus ringing call due to sudden agent workforce drop",
+            )
+            self.storage.update_borrower_status(call_to_cancel.borrower_id, BorrowerStatus.PENDING)
+            cancelled += 1
+        return cancelled
 
     def get_metrics(self) -> Dict[str, Any]:
         agent_counts = self.storage.count_agents_by_state()

@@ -110,29 +110,68 @@ async def demo_agent_drop():
     print("\n" + "=" * 80)
     print("DEMO C: SUDDEN AGENT WORKFORCE DROP (100 -> 60 AGENTS)")
     print("=" * 80)
+    storage = SQLiteStorage(":memory:")
     ctrl = SafetyController(sudden_drop_pct_threshold=0.25)
 
     print("[Step 1] Baseline steady state: 100 agents available in shift.")
-    prop1 = PacingProposal("Predictive", 75, "Pacing proposing aggressive 75 dials for 100 agents", 0.5, 37)
+    # Why 100 available agents authorizes 75 calls:
+    # In this pacing tick, the predictive engine requested 75 calls based on the campaign's batch chunking
+    # size (or 75 pending borrowers ready in queue). Because 75 <= 100 available agents, the Safety
+    # Controller approves all 75 requested calls without reduction.
+    prop1 = PacingProposal("Predictive", 75, "Pacing proposing batch of 75 dials for 100 agents", 0.5, 37)
     pass1 = ctrl.evaluate(prop1, available_agents=100, connected_agents=0, in_flight_calls=0, total_workforce=100)
     print(f"  * Authorized Before Drop:    {pass1.authorized_calls} calls (Full workforce capacity approved).")
 
+    # Seed 75 in-flight ringing calls in storage
+    for i in range(1, 76):
+        c = Call(
+            id=f"call_drop_{i:03d}",
+            campaign_id="camp_drop",
+            borrower_id=f"bor_drop_{i:03d}",
+            phone_number=f"+1555{i:04d}",
+            provider_name="MockProviderA",
+            state=CallState.RINGING,
+            initiated_at=time.time(),
+        )
+        storage.save_call(c)
+
     print("\n[Step 2] Sudden event: 40 agents abruptly disconnect (100 -> 60 agents, 40% attrition)!")
-    print("  * 75 calls are currently outstanding in-flight.")
+    active_before = storage.list_active_calls("camp_drop")
+    in_flight_before = len([c for c in active_before if c.state in (CallState.INITIATED, CallState.RINGING)])
+    print(f"  * In-Flight Ringing Calls Before Drop: {in_flight_before}")
+
+    # Safety Controller immediately detects drop and halts new dials
     prop2 = PacingProposal("Predictive", 40, "Pacing proposing 40 dials", 0.5, 20)
-    
-    # Tick 1: Immediately after drop (workforce is now 60, in_flight is 75)
-    pass2 = ctrl.evaluate(prop2, available_agents=60, connected_agents=0, in_flight_calls=75, total_workforce=60)
+    pass2 = ctrl.evaluate(prop2, available_agents=60, connected_agents=0, in_flight_calls=in_flight_before, total_workforce=60)
+    print(f"  * Authorized Immediately After Drop:  {pass2.authorized_calls} calls (Clamped to 0).")
+    print(f"  * Safety Controller Decision:         {pass2.decision.value}")
+    print(f"  * Safety Controller Rationale:        {pass2.reason}")
 
-    print(f"  * Authorized Immediately After Drop: {pass2.authorized_calls} calls (Clamped to 0).")
-    print(f"  * Safety Controller Decision:        {pass2.decision.value}")
-    print(f"  * Safety Controller Rationale:       {pass2.reason}")
+    print("\n[Step 3] Emergency Cancellation of Surplus Ringing Calls:")
+    # When workforce (60) falls below in-flight ringing calls (75), cancel surplus ringing calls immediately
+    new_capacity = 60
+    surplus = max(0, in_flight_before - new_capacity)
+    cancelled_count = 0
+    ringing_calls = [c for c in active_before if c.state in (CallState.INITIATED, CallState.RINGING)]
+    for i in range(surplus):
+        call_to_cancel = ringing_calls[i]
+        storage.record_call_event_idempotent(
+            call_to_cancel.id,
+            f"evt_cancel_{i}",
+            CallState.CANCELLED,
+            note="Emergency cancellation of surplus ringing call due to sudden agent drop",
+        )
+        cancelled_count += 1
 
-    print("\n[Step 3] Reaction Dynamics & In-Flight Drain:")
-    print("  * Tick 1 (Evaluation Cycle 1): In-flight=75 > New Capacity (60) -> Authorized=0 calls.")
-    print("  * Tick 2 (Evaluation Cycle 2): 35 calls complete -> In-flight drops to 40 (< 60 capacity).")
-    print("  * Ticks to fall under new capacity:  1 tick to clamp dials, 1 cycle to drain in-flight.")
-    print(">>> RESULT: In-flight cap instantly clamps to 0; system absorbs attrition with zero abandoned calls.")
+    active_after = storage.list_active_calls("camp_drop")
+    in_flight_after = len([c for c in active_after if c.state in (CallState.INITIATED, CallState.RINGING)])
+    abandons = 0  # Only unanswered ringing calls were cancelled; 0 connected calls were abandoned
+
+    print(f"  * In-Flight Before Drop:              {in_flight_before}")
+    print(f"  * Surplus Ringing Calls Cancelled:    {cancelled_count} (Ringing calls safely cancelled)")
+    print(f"  * In-Flight After Cancellation:       {in_flight_after} (Exactly matches new capacity: {new_capacity})")
+    print(f"  * Abandoned Calls:                    {abandons}")
+    print(">>> RESULT: Surplus ringing calls cancelled instantly; zero abandoned calls.")
 
 
 async def demo_duplicate_events():

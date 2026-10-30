@@ -100,18 +100,20 @@ python run_load_test.py
 
 Results generated across the four assignment scenarios (guaranteeing **0 abandoned connected calls** in all scenarios):
 
-| Scenario | Conditions | Mode | Dials | Connects | Agent Util % | Abandoned Calls | Abandon Rate |
+| Scenario | Conditions | Mode | Dials | Connects | 20-Seed Mean Util % (Min/Max) | Abandoned Calls | Abandon Rate |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **Scenario A** | Answer Rate: 20%, Talk: 120s | Progressive | 369 | 76 | 7.56% | 0 | **0.0%** |
-| | | Predictive | 716 | 150 | **11.11%** | 0 | **0.0%** |
-| **Scenario B** | Answer Rate: 50%, Talk: 90s | Progressive | 310 | 148 | 11.33% | 0 | **0.0%** |
-| | | Predictive | 421 | 218 | **23.56%** *(2x boost)* | 0 | **0.0%** |
-| **Scenario C** | Answer Rate: 70%, Talk: 180s | Progressive | 268 | 191 | 24.22% | 0 | **0.0%** |
-| | | Predictive | 278 | 200 | **32.89%** | 0 | **0.0%** |
-| **Scenario D** | Dynamic 20-80%, Agent Drops, Jitter | Progressive | 314 | 182 | 25.11% | 0 | **0.0%** |
-| | | Predictive | 415 | 231 | **27.78%** | 0 | **0.0%** |
+| **Scenario A** | Answer Rate: 20%, Talk: 120s | Progressive | 374 | 74 | **5.30%** [2.8% - 8.6%] | 0 | **0.0%** |
+| | | Predictive | 374 | 74 | **6.47%** [3.6% - 8.9%] *(+1.17% paired diff)* | 0 | **0.0%** |
+| **Scenario B** | Answer Rate: 50%, Talk: 90s | Progressive | 311 | 139 | **6.69%** [3.3% - 12.5%] | 0 | **0.0%** |
+| | | Predictive | 297 | 151 | **8.00%** [0.0% - 12.2%] *(+1.31% paired diff)* | 0 | **0.0%** |
+| **Scenario C** | Answer Rate: 70%, Talk: 180s | Progressive | 273 | 183 | **16.05%** [9.4% - 41.9%] | 0 | **0.0%** |
+| | | Predictive | 267 | 187 | **22.14%** [9.2% - 42.2%] *(+6.08% paired diff)* | 0 | **0.0%** |
+| **Scenario D** | Dynamic 20-80%, Agent Drops, Jitter | Progressive | 325 | 155 | **20.22%** [15.3% - 26.1%] | 0 | **0.0%** |
+| | | Predictive | 340 | 178 | **18.10%** [11.7% - 24.2%] *(-2.13% paired diff)* | 0 | **0.0%** |
 
-*Note: Abandoned calls are strictly 0.0% across all scenarios because the Safety Controller dynamically throttles in-flight calls to available workforce capacity.*
+*Note on Deterministic Safety vs. Statistical Pacing:*
+- **What the Deterministic Cap Gains**: Unconditional zero abandoned calls ($0.0\%$ in all scenarios and seeds). Even under catastrophic 100% answer bursts or sudden agent drops, in-flight calls are clamped to guaranteed available capacity, eliminating regulatory compliance risk.
+- **What it Costs**: In low-answer regimes (Scenarios A & B), agent utilization gains over progressive dialing are modest (+1.17% to +1.31%) because predictive dialing cannot launch speculative over-dials without risking abandonment. In volatile dynamic campaigns (Scenario D), progressive dialing achieves +2.12% higher utilization because it operates without EMA estimation lag or conservative safety clamping.
 
 ---
 

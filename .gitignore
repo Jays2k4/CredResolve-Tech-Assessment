@@ -8,3 +8,5 @@ venv/
 .pytest_cache/
 .coverage
 .venv_fresh/
+*.pdf
+Tech Assignment - Hiring 2026.pdf

@@ -228,21 +228,70 @@ async def test_deterministic_cap_strict_per_tick_invariant():
         active = storage.list_active_calls("camp_inv")
         in_flight = sum(1 for c in active if c.state in (CallState.INITIATED, CallState.RINGING))
         
-        now = time.time()
-        imminent = sum(1 for c in active if c.state == CallState.CONNECTED and c.connected_at and (now - c.connected_at >= 0.15))
-        freed = wrap_up + imminent
+        freed = wrap_up
         max_allowed_bound = max(0, available + freed - in_flight)
 
         s_pass = await dialer.step(override_answer_rate=p, avg_talk_time_sec=0.15)
 
-        # STRICT INVARIANT ASSERTION PER TICK
+        # STRICT INVARIANT ASSERTION PER TICK: No speculative talk-time completions allowed!
         assert s_pass.authorized_calls <= max_allowed_bound, (
             f"Authorized calls ({s_pass.authorized_calls}) exceeded deterministic headroom "
-            f"bound ({max_allowed_bound} = {available} avail + {freed} freed - {in_flight} inflight)"
+            f"bound ({max_allowed_bound} = {available} avail + {freed} wrap_up - {in_flight} inflight)"
         )
 
         await asyncio.sleep(0.08)
 
     metrics = dialer.get_metrics()
     assert metrics["abandoned_calls"] == 0
+
+
+@pytest.mark.asyncio
+async def test_long_tail_talk_time_with_100_percent_bursts_zero_abandons():
+    """
+    Test with long-tail talk times (some calls lasting 5x the average duration)
+    under 100% answer bursts, asserting zero abandoned calls.
+    Confirms that because guaranteed_freed never speculatively counts ongoing calls
+    reaching average talk time, long-tail calls never cause surplus pickups or abandons.
+    """
+    storage = SQLiteStorage(":memory:")
+
+    # 15 agents in shift
+    for i in range(1, 16):
+        storage.save_agent(Agent(f"agt_tail_{i}", f"Agent {i}", state=AgentState.AVAILABLE))
+    for i in range(1, 101):
+        storage.save_borrower(Borrower(f"bor_tail_{i}", "camp_tail", f"Borrower {i}", f"+1555{i:04d}"))
+
+    provider = MockProviderA(failure_rate=0.0, min_latency=0.005, max_latency=0.01)
+    dialer = SmartDialer("camp_tail", storage, provider, mode=DialerMode.PREDICTIVE, enforce_worst_case_cap=True)
+
+    # Base avg talk time = 0.05s. Long-tail talk time = 0.25s (5x average).
+    avg_talk = 0.05
+    long_tail_talk = 0.25
+
+    # Run 6 ticks of 100% pickup bursts with long-tail durations
+    for tick in range(6):
+        # Measure capacity BEFORE step dispatches authorized calls
+        agent_counts = storage.count_agents_by_state()
+        available = agent_counts.get(AgentState.AVAILABLE, 0)
+        wrap_up = agent_counts.get(AgentState.WRAP_UP, 0)
+        active = storage.list_active_calls("camp_tail")
+        in_flight = sum(1 for c in active if c.state in (CallState.INITIATED, CallState.RINGING))
+        max_allowed_bound = max(0, available + wrap_up - in_flight)
+
+        # Vary talk times, including 5x long-tail duration
+        talk_duration = long_tail_talk if (tick % 2 == 0) else avg_talk
+        s_pass = await dialer.step(override_answer_rate=1.0, avg_talk_time_sec=talk_duration)
+        
+        # Verify strict deterministic limit
+        assert s_pass.authorized_calls <= max_allowed_bound, (
+            f"Authorized {s_pass.authorized_calls} exceeded bound {max_allowed_bound} "
+            f"(available: {available}, wrap_up: {wrap_up}, in_flight: {in_flight})"
+        )
+        await asyncio.sleep(0.06)
+
+    # Let remaining calls complete
+    await asyncio.sleep(long_tail_talk + 0.05)
+    metrics = dialer.get_metrics()
+    assert metrics["abandoned_calls"] == 0, f"Expected 0 abandons under long-tail talk times, got {metrics['abandoned_calls']}"
+
 
