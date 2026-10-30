@@ -35,7 +35,8 @@ async def main():
             answer_rate=0.20,
             avg_talk_time_sec=0.24,
             use_provider_b=False,
-            cycles=12,
+            cycles=15,
+            warmup_cycles=3,
         ),
         ScenarioConfig(
             name="Scenario_B",
@@ -45,7 +46,8 @@ async def main():
             answer_rate=0.50,
             avg_talk_time_sec=0.18,
             use_provider_b=False,
-            cycles=12,
+            cycles=15,
+            warmup_cycles=3,
         ),
         ScenarioConfig(
             name="Scenario_C",
@@ -55,7 +57,8 @@ async def main():
             answer_rate=0.70,
             avg_talk_time_sec=0.36,
             use_provider_b=False,
-            cycles=12,
+            cycles=15,
+            warmup_cycles=3,
         ),
         ScenarioConfig(
             name="Scenario_D",
@@ -67,7 +70,8 @@ async def main():
             use_provider_b=True,
             inject_agent_drop_cycle=6,
             agent_drop_count=6,
-            cycles=12,
+            cycles=15,
+            warmup_cycles=3,
         ),
     ]
 
@@ -86,42 +90,44 @@ async def main():
         pred_utils = [r.avg_agent_utilization_pct for r in pred_results]
         pred_abands = [r.abandoned_calls for r in pred_results]
 
-        summary_rows.append({
-            "scenario": cfg.name,
-            "mode": "PROGRESSIVE",
-            "util_mean": statistics.mean(prog_utils),
-            "util_min": min(prog_utils),
-            "util_max": max(prog_utils),
-            "aband_mean": statistics.mean(prog_abands),
-            "aband_min": min(prog_abands),
-            "aband_max": max(prog_abands),
-        })
+        # Paired per-seed differences (predictive minus progressive for the exact same seed)
+        paired_diffs = [pred - prog for pred, prog in zip(pred_utils, prog_utils)]
+        mean_paired_diff = statistics.mean(paired_diffs)
+        pred_wins = sum(1 for d in paired_diffs if d > 0)
+        prog_wins = sum(1 for d in paired_diffs if d < 0)
+        ties = sum(1 for d in paired_diffs if d == 0)
 
         summary_rows.append({
             "scenario": cfg.name,
-            "mode": "PREDICTIVE",
-            "util_mean": statistics.mean(pred_utils),
-            "util_min": min(pred_utils),
-            "util_max": max(pred_utils),
-            "aband_mean": statistics.mean(pred_abands),
-            "aband_min": min(pred_abands),
-            "aband_max": max(pred_abands),
+            "prog_mean": statistics.mean(prog_utils),
+            "prog_min": min(prog_utils),
+            "prog_max": max(prog_utils),
+            "pred_mean": statistics.mean(pred_utils),
+            "pred_min": min(pred_utils),
+            "pred_max": max(pred_utils),
+            "mean_paired_diff": mean_paired_diff,
+            "pred_wins": pred_wins,
+            "prog_wins": prog_wins,
+            "ties": ties,
+            "prog_aband_mean": statistics.mean(prog_abands),
+            "pred_aband_mean": statistics.mean(pred_abands),
         })
 
     # Print Formatted Report Table
-    print("\n" + "=" * 105)
-    print("                     20-SEED BENCHMARK SUMMARY (MEAN & MIN/MAX)")
-    print("=" * 105)
-    print(f"{'Scenario':<12} | {'Mode':<12} | {'Mean Util %':<12} | {'Min/Max Util %':<18} | {'Mean Aband':<12} | {'Min/Max Aband'}")
-    print("-" * 105)
+    print("\n" + "=" * 120)
+    print("           20-SEED MONTE CARLO BENCHMARK (STEADY-STATE UTILIZATION & PAIRED DIFFERENCES)")
+    print("=" * 120)
+    print(f"{'Scenario':<12} | {'Progressive Mean (Min/Max)':<28} | {'Predictive Mean (Min/Max)':<28} | {'Paired Diff':<13} | {'Pred Wins':<10} | {'Abandons'}")
+    print("-" * 120)
     for row in summary_rows:
-        util_range = f"[{row['util_min']:.1f}% - {row['util_max']:.1f}%]"
-        aband_range = f"[{row['aband_min']} - {row['aband_max']}]"
-        print(
-            f"{row['scenario']:<12} | {row['mode']:<12} | {row['util_mean']:<11.2f}% | "
-            f"{util_range:<18} | {row['aband_mean']:<12.2f} | {aband_range}"
-        )
-    print("=" * 105)
+        prog_str = f"{row['prog_mean']:.2f}% [{row['prog_min']:.1f}% - {row['prog_max']:.1f}%]"
+        pred_str = f"{row['pred_mean']:.2f}% [{row['pred_min']:.1f}% - {row['pred_max']:.1f}%]"
+        diff_str = f"{row['mean_paired_diff']:+.2f}%"
+        win_str = f"{row['pred_wins']}/20 ({row['pred_wins']*5}%)"
+        aband_str = f"{row['pred_aband_mean']:.2f} (0 in all)"
+        print(f"{row['scenario']:<12} | {prog_str:<28} | {pred_str:<28} | {diff_str:<13} | {win_str:<10} | {aband_str}")
+    print("=" * 120)
+
 
 
 if __name__ == "__main__":

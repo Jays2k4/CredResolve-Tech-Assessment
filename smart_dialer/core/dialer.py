@@ -229,14 +229,14 @@ class SmartDialer:
                 for s in (AgentState.AVAILABLE, AgentState.CONNECTED, AgentState.DIALING, AgentState.RESERVED, AgentState.WRAP_UP)
             )
 
-            # Count wrap-up agents and calls near the end of talk time (will certainly be free by answer time)
+            # Count wrap-up agents and calls whose talk time has completed
             wrap_up_agents = agent_counts.get(AgentState.WRAP_UP, 0)
             now = time.time()
             imminent_talk_end_agents = 0
             for call in active_calls:
                 if call.state == CallState.CONNECTED and call.connected_at:
                     elapsed = now - call.connected_at
-                    if elapsed >= max(0.0, avg_talk_time_sec - self.safety_controller.setup_time_sec):
+                    if elapsed >= avg_talk_time_sec:
                         imminent_talk_end_agents += 1
             guaranteed_freed = wrap_up_agents + imminent_talk_end_agents
 

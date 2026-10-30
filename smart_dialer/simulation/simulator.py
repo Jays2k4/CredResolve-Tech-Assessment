@@ -27,6 +27,7 @@ class ScenarioConfig:
     inject_agent_drop_cycle: Optional[int] = None
     agent_drop_count: int = 8
     cycles: int = 15
+    warmup_cycles: int = 3
 
 
 @dataclass
@@ -126,9 +127,10 @@ class DialerSimulator:
             # Allow calls to initiate, ring, and bridge
             await asyncio.sleep(0.08)
 
-            # Record utilization while calls are connected
+            # Record utilization ONLY during steady-state (post warm-up period)
             metrics = self.dialer.get_metrics()
-            utilization_samples.append(metrics["agent_utilization_pct"])
+            if cycle > self.config.warmup_cycles:
+                utilization_samples.append(metrics["agent_utilization_pct"])
 
             # Allow talk duration progress
             await asyncio.sleep(talk_time * 0.7)

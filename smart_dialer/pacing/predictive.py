@@ -38,6 +38,18 @@ class PredictivePacingEngine:
         self.avg_talk_time_sec = default_talk_time_sec
         self.ema_alpha = ema_alpha
 
+    def get_estimated_answer_rate(self) -> float:
+        return self.current_answer_rate
+
+    def update_stats(self, actual_connections: int, dials_placed: int) -> None:
+        """Update rolling stats from a batch of dials placed and connections."""
+        if dials_placed > 0:
+            obs = actual_connections / dials_placed
+            self.current_answer_rate = (
+                self.ema_alpha * obs + (1 - self.ema_alpha) * self.current_answer_rate
+            )
+            self.current_answer_rate = max(0.05, min(0.95, self.current_answer_rate))
+
     def update_metrics(self, answered: bool, talk_time_sec: Optional[float] = None) -> None:
         """Update rolling stats using Exponential Moving Average."""
         obs_rate = 1.0 if answered else 0.0

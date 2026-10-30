@@ -108,6 +108,7 @@ class SafetyController:
             drop_ratio = agent_delta / self.last_known_workforce
             if drop_ratio >= self.sudden_drop_pct_threshold:
                 # Sudden agent attrition detected! Fall back to strict progressive 1:1
+                old_workforce = self.last_known_workforce
                 self.last_known_workforce = current_workforce
                 safe_slots = max(0, available_agents - in_flight_calls)
                 allowed = min(requested, safe_slots)
@@ -118,7 +119,7 @@ class SafetyController:
                     authorized_calls=allowed,
                     original_requested_calls=requested,
                     reason=(
-                        f"Sudden agent workforce drop detected ({drop_ratio:.1%} reduction from {self.last_known_workforce} to {current_workforce}). "
+                        f"Sudden agent workforce drop detected ({drop_ratio:.1%} reduction from {old_workforce} to {current_workforce}). "
                         f"Falling back to deterministic progressive dialing ({allowed} calls)."
                     ),
                 )
@@ -138,17 +139,13 @@ class SafetyController:
         # 4. Safe Headroom Calculation
         # In Progressive Mode: strictly 1:1 against current available agents.
         # In Deterministic Worst-Case Cap Mode (Default):
+        # Strictly enforces: authorized <= available + guaranteed_freed - in_flight.
         # Counts current available agents + agents who will certainly be free by the time a call can answer
-        # (agents in WRAP_UP and connected calls near the end of talk time).
+        # (agents in WRAP_UP and connected calls that have completed their talk time).
         if proposal.engine_name == "ProgressivePacing":
             net_safe_headroom = max(0, available_agents - in_flight_calls)
         elif self.enforce_worst_case_cap:
-            freed = guaranteed_freed_agents
-            if freed == 0 and connected_agents > 0 and self.setup_time_sec > 0:
-                setup_ratio = min(1.0, self.setup_time_sec / max(0.1, self.avg_talk_time_sec))
-                freed = int(math.floor(connected_agents * setup_ratio))
-
-            guaranteed_capacity = available_agents + freed
+            guaranteed_capacity = available_agents + guaranteed_freed_agents
             net_safe_headroom = max(0, guaranteed_capacity - in_flight_calls)
         else:
             # Predictive Statistical Mode:
