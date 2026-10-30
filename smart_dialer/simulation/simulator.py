@@ -106,10 +106,10 @@ class DialerSimulator:
         talk_time = self.config.avg_talk_time_sec
 
         for cycle in range(1, self.config.cycles + 1):
-            # Dynamic conditions in Scenario D
+            # Dynamic conditions in Scenario D (Answer rate 20-80%, Talk times 90-180s)
             if self.config.dynamic_answer_rate:
-                current_p = 0.30 + 0.40 * (0.5 + 0.5 * random.random())
-                talk_time = random.uniform(0.2, 0.4)
+                current_p = 0.20 + 0.60 * random.random()
+                talk_time = random.uniform(0.18, 0.36)
 
             # Test Sudden Agent Drop
             if self.config.inject_agent_drop_cycle == cycle:

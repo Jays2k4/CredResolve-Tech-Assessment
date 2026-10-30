@@ -160,7 +160,7 @@ class SmartDialer:
         provider: TelecomProvider,
         mode: DialerMode = DialerMode.PROGRESSIVE,
         max_multiplier_ceiling: float = 3.0,
-        enforce_worst_case_cap: bool = False,
+        enforce_worst_case_cap: bool = True,
     ):
         self.campaign_id = campaign_id
         self.storage = storage
@@ -229,6 +229,17 @@ class SmartDialer:
                 for s in (AgentState.AVAILABLE, AgentState.CONNECTED, AgentState.DIALING, AgentState.RESERVED, AgentState.WRAP_UP)
             )
 
+            # Count wrap-up agents and calls near the end of talk time (will certainly be free by answer time)
+            wrap_up_agents = agent_counts.get(AgentState.WRAP_UP, 0)
+            now = time.time()
+            imminent_talk_end_agents = 0
+            for call in active_calls:
+                if call.state == CallState.CONNECTED and call.connected_at:
+                    elapsed = now - call.connected_at
+                    if elapsed >= max(0.0, avg_talk_time_sec - self.safety_controller.setup_time_sec):
+                        imminent_talk_end_agents += 1
+            guaranteed_freed = wrap_up_agents + imminent_talk_end_agents
+
             # 3. SAFETY CONTROLLER: The Non-Bypassable Boundary
             safety_pass = self.safety_controller.evaluate(
                 proposal=proposal,
@@ -237,6 +248,7 @@ class SmartDialer:
                 in_flight_calls=in_flight_calls,
                 circuit_breaker=self.circuit_breaker,
                 total_workforce=total_active_workforce,
+                guaranteed_freed_agents=guaranteed_freed,
             )
             self.history_passes.append(safety_pass)
 

@@ -232,10 +232,24 @@ For example, in Scenario A ($p = 0.20$), if $N = 10$ and $A = 4$:
 - The probability of the catastrophic worst case (all 10 answering simultaneously) is:
   $$\mathbb{P}(S_{10} = 10) = (0.20)^{10} = 1.024 \times 10^{-7} \quad (1 \text{ in } 9.76 \text{ million calls})$$
 
-#### Deterministic Worst-Case Cap (`enforce_worst_case_cap`):
-For deployments where regulations forbid even a $10^{-7}$ statistical tail risk, `SafetyController` exposes `enforce_worst_case_cap=True`. When enabled:
-$$\text{authorized\_calls} \le \max(0, \text{available\_agents} - \text{in\_flight\_calls})$$
-This enforces that total in-flight calls can never exceed available agents, deterministically guaranteeing 0 abandoned calls even if 100% of ringing calls answer at the same second. Progressive dialing is the special case where this worst-case cap is permanently enforced.
+#### Deterministic Worst-Case Cap (`enforce_worst_case_cap = True`, Default):
+In the Safety Controller, the default operating posture is the **Deterministic Worst-Case Cap**. 
+It strictly limits in-flight calls to agents who are currently available or guaranteed to be free by the time a newly placed call completes setup and answers:
+$$\text{Guaranteed Capacity} = \text{Available Agents} + \text{Agents in Wrap-Up} + \text{Connected Calls within } t_{\text{setup}} \text{ of finishing}$$
+$$\text{Net Safe Headroom} = \max(0, \text{Guaranteed Capacity} - \text{In-Flight Calls})$$
+
+- **Guarantees**: Absolute zero abandoned calls under any condition, even if 100% of ringing calls answer at the exact same millisecond ($0$ abandons unconditionally).
+- **Limitation**: In low-answer-rate campaigns (e.g. 20% in Scenario A), dialing is constrained to guaranteed capacity, causing agent utilization to remain lower because no speculative calls are launched.
+
+#### What Statistical Over-Dial Mode Gains and Risks:
+When statistical mode is explicitly enabled (`enforce_worst_case_cap = False`):
+- **What it gains**:
+  - Dials proportionally to the expected pickup rate: $\text{Dials} \approx \frac{\text{Capacity}}{p}$.
+  - In low-to-medium answer rate environments (Scenarios A & B), agent utilization typically doubles (e.g., from ~9% up to ~18–24%), eliminating agent idle time while waiting for non-answering numbers to ring out.
+- **What it risks**:
+  - **Abandonment Tail Risk**: Because the number of answers follows $S_N \sim \text{Binomial}(N, p)$, there is a non-zero probability $\mathbb{P}(S_N > A)$ that actual answers exceed available agents.
+  - **Simultaneous Pickup Surge**: If an unexpected batch of borrowers answers at once, surplus callers must be placed in a temporary grace queue. If no agent finishes their call within the regulatory grace window, the surplus call **must be dropped/abandoned** with `ABANDONED_NO_AGENT_AVAILABLE`.
+  - For collections where regulations treat any abandoned call as a major compliance violation, the deterministic cap is required.
 
 ---
 

@@ -13,7 +13,7 @@ from smart_dialer.telecom.mock_provider_a import MockProviderA
 
 
 def test_safety_controller_approve_and_reduce():
-    ctrl = SafetyController(max_multiplier_ceiling=3.0)
+    ctrl = SafetyController(max_multiplier_ceiling=3.0, enforce_worst_case_cap=False)
 
     # 1. Proposal within safe limit -> APPROVE
     proposal = PacingProposal("Predictive", suggested_calls=15, reason="test", target_answer_rate=0.5, expected_connections=7)
@@ -27,6 +27,37 @@ def test_safety_controller_approve_and_reduce():
     s_pass_reduced = ctrl.evaluate(aggressive_proposal, available_agents=10, connected_agents=5, in_flight_calls=5)
     assert s_pass_reduced.decision == SafetyDecision.REDUCE
     assert s_pass_reduced.authorized_calls == 25
+
+
+def test_safety_controller_deterministic_worst_case_cap_default():
+    # By default, enforce_worst_case_cap is True
+    ctrl = SafetyController()
+    assert ctrl.enforce_worst_case_cap is True
+
+    # available=10, connected=5, guaranteed_freed=3 (wrap-up + imminent ending), in_flight=2
+    # Guaranteed Capacity = 10 + 3 = 13. Net safe headroom = 13 - 2 = 11.
+    proposal = PacingProposal("Predictive", suggested_calls=15, reason="overdial", target_answer_rate=0.5, expected_connections=7)
+    s_pass = ctrl.evaluate(
+        proposal,
+        available_agents=10,
+        connected_agents=5,
+        in_flight_calls=2,
+        guaranteed_freed_agents=3,
+    )
+    assert s_pass.decision == SafetyDecision.REDUCE
+    assert s_pass.authorized_calls == 11
+
+    # Request within guaranteed capacity -> APPROVE
+    prop_safe = PacingProposal("Predictive", suggested_calls=8, reason="safe", target_answer_rate=0.5, expected_connections=4)
+    s_pass_safe = ctrl.evaluate(
+        prop_safe,
+        available_agents=10,
+        connected_agents=5,
+        in_flight_calls=2,
+        guaranteed_freed_agents=3,
+    )
+    assert s_pass_safe.decision == SafetyDecision.APPROVE
+    assert s_pass_safe.authorized_calls == 8
 
 
 def test_safety_controller_rejects_on_carrier_outage():

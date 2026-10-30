@@ -65,7 +65,7 @@ class SafetyController:
         sudden_drop_pct_threshold: float = 0.25,  # 25% drop is flagged as abrupt
         setup_time_sec: float = 0.15,
         avg_talk_time_sec: float = 1.0,
-        enforce_worst_case_cap: bool = False,
+        enforce_worst_case_cap: bool = True,
     ):
         self.max_multiplier_ceiling = max_multiplier_ceiling
         self.sudden_drop_pct_threshold = sudden_drop_pct_threshold
@@ -85,6 +85,7 @@ class SafetyController:
         in_flight_calls: int,
         circuit_breaker: Optional[TelecomCircuitBreaker] = None,
         total_workforce: Optional[int] = None,
+        guaranteed_freed_agents: int = 0,
     ) -> SafetyPass:
         requested = proposal.suggested_calls
         pass_id = f"safe_{uuid.uuid4().hex[:12]}"
@@ -135,11 +136,20 @@ class SafetyController:
             )
 
         # 4. Safe Headroom Calculation
-        # Progressive Mode or Deterministic Worst-Case Cap Mode:
-        # Strictly bounds in-flight calls to available agents so even a 100% simultaneous answer
-        # burst cannot cause an abandoned call.
-        if proposal.engine_name == "ProgressivePacing" or self.enforce_worst_case_cap:
+        # In Progressive Mode: strictly 1:1 against current available agents.
+        # In Deterministic Worst-Case Cap Mode (Default):
+        # Counts current available agents + agents who will certainly be free by the time a call can answer
+        # (agents in WRAP_UP and connected calls near the end of talk time).
+        if proposal.engine_name == "ProgressivePacing":
             net_safe_headroom = max(0, available_agents - in_flight_calls)
+        elif self.enforce_worst_case_cap:
+            freed = guaranteed_freed_agents
+            if freed == 0 and connected_agents > 0 and self.setup_time_sec > 0:
+                setup_ratio = min(1.0, self.setup_time_sec / max(0.1, self.avg_talk_time_sec))
+                freed = int(math.floor(connected_agents * setup_ratio))
+
+            guaranteed_capacity = available_agents + freed
+            net_safe_headroom = max(0, guaranteed_capacity - in_flight_calls)
         else:
             # Predictive Statistical Mode:
             # Capacity = currently available agents + agents expected to free up during call setup
