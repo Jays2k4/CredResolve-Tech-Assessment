@@ -160,11 +160,13 @@ class SmartDialer:
         provider: TelecomProvider,
         mode: DialerMode = DialerMode.PROGRESSIVE,
         max_multiplier_ceiling: float = 3.0,
+        enforce_worst_case_cap: bool = False,
     ):
         self.campaign_id = campaign_id
         self.storage = storage
         self.provider = provider
         self.mode = mode
+        self.enforce_worst_case_cap = enforce_worst_case_cap
 
         self.circuit_breaker = TelecomCircuitBreaker(failure_threshold=5, recovery_time_sec=5.0)
         self.event_handler = ResilientEventHandler(storage, self.circuit_breaker)
@@ -172,7 +174,10 @@ class SmartDialer:
 
         self.progressive_pacing = ProgressivePacingEngine()
         self.predictive_pacing = PredictivePacingEngine()
-        self.safety_controller = SafetyController(max_multiplier_ceiling=max_multiplier_ceiling)
+        self.safety_controller = SafetyController(
+            max_multiplier_ceiling=max_multiplier_ceiling,
+            enforce_worst_case_cap=enforce_worst_case_cap,
+        )
         self.call_allocator = CallAllocator(storage, provider, circuit_breaker=self.circuit_breaker)
 
         self.total_cycles = 0

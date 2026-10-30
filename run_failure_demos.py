@@ -101,17 +101,15 @@ async def demo_agent_drop():
     print(f"  * Normal Decision: {pass1.decision.value} -> Authorized: {pass1.authorized_calls} calls.")
 
     print("\n[Step 2] Sudden event: 40 agents abruptly disconnect / shift change occurs!")
-    t0 = time.perf_counter()
     prop2 = PacingProposal("Predictive", 30, "Pacing proposing 30 dials", 0.5, 15)
     # Workforce dropped to 60 (40% attrition)
     pass2 = ctrl.evaluate(prop2, available_agents=60, connected_agents=0, in_flight_calls=0, total_workforce=60)
-    elapsed_ms = (time.perf_counter() - t0) * 1000
 
-    print(f"  * Detection & Reaction Time: {elapsed_ms:.3f} ms")
+    print(f"  * Pacing Ticks to React:     1 tick (immediate next evaluation cycle)")
     print(f"  * Safety Controller Decision: {pass2.decision.value}")
     print(f"  * Authorized Calls Clamped:  {pass2.authorized_calls} (Strict progressive 1:1 fallback)")
     print(f"  * Rationale: {pass2.reason}")
-    print(">>> RESULT: Instantaneous throttling (< 1ms), preventing overdialing into a depleted workforce.")
+    print(">>> RESULT: Within exactly 1 pacing tick, in-flight cap falls to match new workforce capacity.")
 
 
 async def demo_duplicate_events():

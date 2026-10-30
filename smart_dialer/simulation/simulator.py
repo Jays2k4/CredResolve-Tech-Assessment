@@ -52,9 +52,12 @@ class DialerSimulator:
     telecom and borrower behavioral conditions.
     """
 
-    def __init__(self, config: ScenarioConfig, mode: DialerMode = DialerMode.PREDICTIVE):
+    def __init__(self, config: ScenarioConfig, mode: DialerMode = DialerMode.PREDICTIVE, seed: Optional[int] = None):
         self.config = config
         self.mode = mode
+        self.seed = seed
+        if seed is not None:
+            random.seed(seed)
         self.storage = SQLiteStorage(":memory:")
 
         # Choose provider

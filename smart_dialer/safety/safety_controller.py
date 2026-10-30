@@ -65,11 +65,13 @@ class SafetyController:
         sudden_drop_pct_threshold: float = 0.25,  # 25% drop is flagged as abrupt
         setup_time_sec: float = 0.15,
         avg_talk_time_sec: float = 1.0,
+        enforce_worst_case_cap: bool = False,
     ):
         self.max_multiplier_ceiling = max_multiplier_ceiling
         self.sudden_drop_pct_threshold = sudden_drop_pct_threshold
         self.setup_time_sec = setup_time_sec
         self.avg_talk_time_sec = avg_talk_time_sec
+        self.enforce_worst_case_cap = enforce_worst_case_cap
         
         self.last_known_workforce: Optional[int] = None
         self.last_evaluation_time: float = time.time()
@@ -133,11 +135,13 @@ class SafetyController:
             )
 
         # 4. Safe Headroom Calculation
-        # Progressive Mode: strictly 1:1 with currently available agents
-        if proposal.engine_name == "ProgressivePacing":
+        # Progressive Mode or Deterministic Worst-Case Cap Mode:
+        # Strictly bounds in-flight calls to available agents so even a 100% simultaneous answer
+        # burst cannot cause an abandoned call.
+        if proposal.engine_name == "ProgressivePacing" or self.enforce_worst_case_cap:
             net_safe_headroom = max(0, available_agents - in_flight_calls)
         else:
-            # Predictive Mode:
+            # Predictive Statistical Mode:
             # Capacity = currently available agents + agents expected to free up during call setup
             setup_ratio = min(1.0, self.setup_time_sec / max(0.1, self.avg_talk_time_sec))
             expected_freed = connected_agents * setup_ratio

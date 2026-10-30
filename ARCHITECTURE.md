@@ -207,6 +207,38 @@ Our architecture guarantees eventual consistency through three mechanisms:
 
 ---
 
+### Question 4b: What happens if 100% of ringing calls answer at the same moment and there are fewer free agents than answers? Is the safety guarantee statistical or deterministic?
+
+#### The Exact Operational Trace:
+Suppose $N = 10$ calls are in the `RINGING` state, and only $A = 4$ agents are currently `AVAILABLE`. At $t = 0$, every single borrower picks up ($p = 1.0$).
+1. **Immediate Allocation**: The carrier delivers 10 `ANSWERED` webhooks. The first 4 calls acquire the 4 available agents via atomic Compare-And-Swap (`reserve_agent_atomic`), bridging to `CONNECTED`.
+2. **Grace Retries**: For the remaining 6 calls, no available agents exist. The `ResilientEventHandler` executes a bounded retry loop (up to 180ms) attempting to catch agents completing `WRAP_UP`.
+3. **Abandonment Logging**: If those 6 calls cannot be bridged before the grace timeout expires, they are transitioned to `FAILED` with `failure_reason = "ABANDONED_NO_AGENT_AVAILABLE"`, and `abandoned_calls_count` increments by 6.
+
+#### The Nature of the Guarantee:
+**Any predictive dialer that over-dials ($N > A$) operates under a statistical guarantee, not an unconditional deterministic guarantee.**
+If a dialer initiates 10 calls for 4 agents because the expected answer rate is 20%, an adversarial event where 100% answer simultaneously will necessarily produce surplus answered calls.
+
+#### The Mathematical Bound:
+The number of simultaneous answers follows a Binomial distribution $S_N \sim \text{Binomial}(N, p)$. The probability that answers exceed capacity $A$ is:
+$$\mathbb{P}(\text{Answers} > A) = \sum_{k=A+1}^{N} \binom{N}{k} p^k (1-p)^{N-k}$$
+
+By Hoeffding's Inequality, the probability of exceeding capacity is bounded by:
+$$\mathbb{P}(S_N \ge A) \le \exp\left( -2 \frac{(A - Np)^2}{N} \right)$$
+
+For example, in Scenario A ($p = 0.20$), if $N = 10$ and $A = 4$:
+- The expected answers are $\mathbb{E}[S_N] = 10 \times 0.20 = 2.0$.
+- The probability that answers exceed 4 is $\mathbb{P}(S_{10} > 4) \approx 0.0328$ (3.2%).
+- The probability of the catastrophic worst case (all 10 answering simultaneously) is:
+  $$\mathbb{P}(S_{10} = 10) = (0.20)^{10} = 1.024 \times 10^{-7} \quad (1 \text{ in } 9.76 \text{ million calls})$$
+
+#### Deterministic Worst-Case Cap (`enforce_worst_case_cap`):
+For deployments where regulations forbid even a $10^{-7}$ statistical tail risk, `SafetyController` exposes `enforce_worst_case_cap=True`. When enabled:
+$$\text{authorized\_calls} \le \max(0, \text{available\_agents} - \text{in\_flight\_calls})$$
+This enforces that total in-flight calls can never exceed available agents, deterministically guaranteeing 0 abandoned calls even if 100% of ringing calls answer at the same second. Progressive dialing is the special case where this worst-case cap is permanently enforced.
+
+---
+
 ### Question 5: We just went from 100 agents > 1,000 agents > 10,000 agents > 100,000 agents. What breaks first? Where is the bottleneck and why? How would you fix it?
 
 #### What breaks first?
