@@ -243,14 +243,15 @@ $$\text{Net Safe Headroom} = \max(0, \text{Guaranteed Capacity} - \text{In-Fligh
   - Turnaround estimates ($C \times t_{\text{setup}} / T_{\text{talk}}$) are placed into a separate `expected_freed` metric used exclusively by `PredictivePacingEngine` to generate proposals, **never** inside the Safety Controller's hard cap.
 
 #### Honest Trade-Off Analysis: Deterministic Worst-Case Cap vs. Statistical Over-Dial Mode
+*(Note: Figures for statistical over-dial mode are illustrative theoretical projections, not benchmark-measured results).*
 
 | Dimension | Deterministic Worst-Case Cap (Default) | Statistical Over-Dial Mode (`enforce_worst_case_cap = False`) |
 | :--- | :--- | :--- |
-| **Abandonment Guarantee** | **Deterministic Zero (0.00% unconditionally)**. Even if 100% of ringing calls answer at once, answers $\le$ available agents. | **Statistical (~1–3% tail risk)**. $S_N \sim \text{Binomial}(N, p)$ can surge past available agents during pickup bursts. |
-| **Low Answer Rate (Scenario A, 20%)** | Utilization is modest (**~5.3%–6.5%**). Dialer cannot over-dial by $1/p = 5\times$, so agents wait while non-answers ring out. | Utilization nearly doubles (**~11%–14%**) by dialing 5 calls per available agent ahead of time. |
-| **Medium Answer Rate (Scenario B, 50%)** | Utilization is **~6.7%–8.0%**. Over-dialing is clamped to available plus wrap-up capacity. | Utilization reaches **~18%–24%** by anticipating 50% non-pickup. |
-| **High Answer Rate (Scenario C, 70%)** | High utilization (**~16%–22%** in steady-state, up to ~37% in single-run peak). Turnaround density provides frequent wrap-up slots. | High utilization (**~25%–33%**), but high pickup rate increases vulnerability to sudden simultaneous bursts. |
-| **Dynamic Shifts & Drops (Scenario D)** | Progressive beats Predictive (**20.2% vs 18.1%**). Progressive dials 1:1 immediately without EMA lag or safety clamping. | Predictive over-dials aggressively, but incurs transient abandon risk when agent workforce drops abruptly. |
+| **Abandonment Guarantee** | **Deterministic Zero (0.00% unconditionally)**. Even if 100% of ringing calls answer at once, answers $\le$ available capacity. | **Statistical (Non-zero tail risk; illustrative, not measured)**. $S_N \sim \text{Binomial}(N, p)$ can surge past available capacity during pickup bursts. |
+| **Low Answer Rate (Scenario A, 20%)** | Utilization is modest (**6.15% vs 5.56%**). Dialer cannot over-dial by $1/p = 5\times$, so agents wait while non-answers ring out. | Theoretical increase (*illustrative, not measured*: ~11%–14%) by dialing up to 5 calls per available agent ahead of time. |
+| **Medium Answer Rate (Scenario B, 50%)** | Predictive gains **+3.97%** (**7.86% vs 3.89%**). Over-dialing is clamped to available plus wrap-up capacity. | Theoretical increase (*illustrative, not measured*: ~18%–24%) by anticipating 50% non-pickup. |
+| **High Answer Rate (Scenario C, 70%)** | High utilization (**19.36% vs 18.58%** in steady-state, up to ~37.5% single-run peak). Turnaround slots are captured cleanly. | Theoretical increase (*illustrative, not measured*: ~25%–33%), but high pickup rate increases vulnerability to simultaneous bursts. |
+| **Dynamic Shifts & Drops (Scenario D)** | Progressive edges out Predictive (**18.60% vs 17.88%**). Progressive dials 1:1 immediately without EMA lag or safety clamping. | Predictive over-dials aggressively based on expected $p$, but incurs transient abandon risk when agent workforce drops abruptly. |
 | **Regulatory & Compliance Posture** | **100% Compliant**. Suitable for debt collection and financial services where any abandoned call is a regulatory violation. | **High Compliance Risk**. Requires temporary hold queues and risks regulatory fines if hold times exceed statutory grace windows. |
 
 ---

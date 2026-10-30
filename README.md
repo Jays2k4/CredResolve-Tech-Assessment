@@ -102,14 +102,17 @@ Results generated across the four assignment scenarios (guaranteeing **0 abandon
 
 | Scenario | Conditions | Mode | Dials | Connects | 20-Seed Mean Util % (Min/Max) | Abandoned Calls | Abandon Rate |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **Scenario A** | Answer Rate: 20%, Talk: 120s | Progressive | 374 | 74 | **5.30%** [2.8% - 8.6%] | 0 | **0.0%** |
-| | | Predictive | 374 | 74 | **6.47%** [3.6% - 8.9%] *(+1.17% paired diff)* | 0 | **0.0%** |
-| **Scenario B** | Answer Rate: 50%, Talk: 90s | Progressive | 311 | 139 | **6.69%** [3.3% - 12.5%] | 0 | **0.0%** |
-| | | Predictive | 297 | 151 | **8.00%** [0.0% - 12.2%] *(+1.31% paired diff)* | 0 | **0.0%** |
-| **Scenario C** | Answer Rate: 70%, Talk: 180s | Progressive | 273 | 183 | **16.05%** [9.4% - 41.9%] | 0 | **0.0%** |
-| | | Predictive | 267 | 187 | **22.14%** [9.2% - 42.2%] *(+6.08% paired diff)* | 0 | **0.0%** |
-| **Scenario D** | Dynamic 20-80%, Agent Drops, Jitter | Progressive | 325 | 155 | **20.22%** [15.3% - 26.1%] | 0 | **0.0%** |
-| | | Predictive | 340 | 178 | **18.10%** [11.7% - 24.2%] *(-2.13% paired diff)* | 0 | **0.0%** |
+| **Scenario A** | Answer Rate: 20%, Talk: 120s | Progressive | 369 | 78 | **6.15%** [2.8% - 9.7%] | 0 | **0.0%** |
+| | | Predictive | 370 | 75 | **5.56%** [0.3% - 10.3%] *(-0.60% paired diff)* | 0 | **0.0%** |
+| **Scenario B** | Answer Rate: 50%, Talk: 90s | Progressive | 310 | 145 | **3.89%** [0.3% - 8.3%] | 0 | **0.0%** |
+| | | Predictive | 309 | 140 | **7.86%** [1.9% - 13.3%] *(+3.97% paired diff)* | 0 | **0.0%** |
+| **Scenario C** | Answer Rate: 70%, Talk: 180s | Progressive | 271 | 189 | **19.36%** [10.3% - 43.3%] | 0 | **0.0%** |
+| | | Predictive | 268 | 190 | **18.58%** [8.1% - 35.0%] *(-0.78% paired diff)* | 0 | **0.0%** |
+| **Scenario D** | Dynamic 20-80%, Agent Drops, Jitter | Progressive | 325 | 151 | **18.60%** [11.9% - 21.9%] | 0 | **0.0%** |
+| | | Predictive | 341 | 133 | **17.88%** [11.4% - 23.9%] *(-0.72% paired diff)* | 0 | **0.0%** |
+
+*Important Measurement Context:*
+Utilization is measured on a toy time scale and is only meaningful for relative comparison, and the single-run table in `run_simulation.py` can show 0.0% in some scenarios due to a known measurement limitation (warm-up/sampling).
 
 *Note on Deterministic Safety vs. Statistical Pacing:*
 - **What the Deterministic Cap Gains**: Unconditional zero abandoned calls ($0.0\%$ in all scenarios and seeds). Even under catastrophic 100% answer bursts or sudden agent drops, in-flight calls are clamped to guaranteed available capacity, eliminating regulatory compliance risk.

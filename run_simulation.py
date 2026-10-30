@@ -103,9 +103,9 @@ async def main():
         )
     print("=" * 95)
     print("\nKey Takeaways:")
-    print("1. Predictive pacing beats Progressive across all answer rate regimes (especially in Scenarios A & B).")
-    print("2. In Scenario C (70% answer rate), Predictive and Progressive both achieve high utilization, with Predictive dialing ahead.")
-    print("3. Abandoned connected calls remain strictly ZERO across all scenarios due to the Safety Controller.\n")
+    print("1. Predictive does not win in every scenario; under the deterministic cap, it is roughly equal to progressive.")
+    print("2. In Scenario C (70% answer rate), Predictive and Progressive both achieve high utilization; in Scenarios A, B, and D, utilization differences are small.")
+    print("3. Abandoned connected calls remain strictly ZERO across all scenarios due to the non-bypassable Safety Controller.\n")
 
 
 if __name__ == "__main__":
